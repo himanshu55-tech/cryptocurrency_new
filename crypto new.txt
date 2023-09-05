@@ -1,0 +1,110 @@
+import hashlib
+import json
+from textwrap import dedent
+from uuid import uuid4
+import jsonpickle
+from flask import Flask
+from urllib.parse import urlparse
+from Crypto.PublicKey import RSA
+from Crypto.Signature import *
+from time import time
+from datetime import datetime
+import requests
+
+
+class Blockchain (object):
+	def __init__(self):
+		self.chain = [self.addGenesisBlock()];
+		self.pendingTransactions = [];
+		self.difficulty = 2;
+		self.minerRewards = 50;
+		self.blockSize = 10;
+		self.nodes = set();
+
+	def register_node(self, address):
+		parsedUrl = urlparse(address)
+		self.nodes.add(parsedUrl.netloc)
+
+	def resolveConflicts(self):
+		neighbors = self.nodes;
+		newChain = None;
+
+		maxLength = len(self.chain);
+
+		for node in neighbors:
+			response = requests.get(f'http://{node}/chain');
+
+			if response.status_code == 200:
+				length = response.json()['length'];
+				chain = response.json()['chain'];
+
+				if length > maxLength and self.isValidChain():
+					maxLength = length;
+					newChain = chain;
+
+		if newChain:
+			self.chain = self.chainJSONdecode(newChain);
+			print(self.chain);
+			return True;
+
+		return False;
+
+	def minePendingTransactions(self, miner):
+		
+		lenPT = len(self.pendingTransactions);
+		if(lenPT <= 1):
+			print("Not enough transactions to mine! (Must be > 1)")
+			return False;
+		else:
+			for i in range(0, lenPT, self.blockSize):
+
+				end = i + self.blockSize;
+				if i >= lenPT:
+					end = lenPT;
+				
+				transactionSlice = self.pendingTransactions[i:end];
+
+				newBlock = Block(transactionSlice, datetime.now().strftime("%m/%d/%Y, %H:%M:%S"), len(self.chain));
+				#print(type(self.getLastBlock()));
+
+				hashVal = self.getLastBlock().hash;
+				newBlock.prev = hashVal;
+				newBlock.mineBlock(self.difficulty);
+				self.chain.append(newBlock);
+			print("Mining Transactions Success!");
+
+			payMiner = Transaction("Miner Rewards", miner, self.minerRewards);
+			self.pendingTransactions = [payMiner];
+		return True;
+
+	def addTransaction(self, sender, reciever, amt, keyString, senderKey):
+		keyByte = keyString.encode("ASCII");
+		senderKeyByte = senderKey.encode("ASCII");
+
+		#print(type(keyByte), keyByte);
+
+		key = RSA.import_key(keyByte);
+		senderKey = RSA.import_key(senderKeyByte);
+
+		if not sender or not reciever or not amt:
+			print("transaction error 1");
+			return False;
+
+		transaction = Transaction(sender, reciever, amt);
+
+		transaction.signTransaction(key, senderKey);
+
+		if not transaction.isValidTransaction():
+			print("transaction error 2");
+			return False;
+		self.pendingTransactions.append(transaction);
+		return len(self.chain) + 1;
+
+	def getLastBlock(self):
+
+		return self.chain[-1];
+
+	def addGenesisBlock(self):
+		tArr = [];
+		tArr.append(Transaction("me", "you", 10));
+		genesis = Block(tArr, datetime.now().strftime("%m/%d/%Y, %H:%M:%S"), 0);
